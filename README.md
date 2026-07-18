@@ -1,102 +1,79 @@
-# Leverage — Multi-Vendor Negotiation Game
+# Leverage — Autonomous Contract Negotiation, Monitored Live
 
-A human-in-the-loop negotiation simulator for the **save time / money** track.
+An **agent-operations dashboard**. Your AI **procurement agent** negotiates a
+corporate SaaS discount with three **vendor agents** (Cursor, Claude Code,
+Codex) entirely over a **simulated inbox** — drafting and sending emails,
+running online research, following up on slow vendors, and adapting its strategy
+when you coach it. You watch it all happen live and approve the final contract.
 
-You're buying a SaaS tool (AI coding assistant, or team chat) and you're
-**vendor-agnostic**. Your AI procurement agent negotiates with all three vendors
-**at once**, and you coach it with strategies — start a bidding war, bluff about a
-competitor, create urgency, squeeze non-price extras, hold firm, or walk away.
-Watch each agent's private reasoning, see prices converge on a live chart, then
-close with whoever gives you the best deal and see the **dollars saved**.
+> Not a chat loop. The agents run autonomously and asynchronously; you *monitor
+> and coach*, you don't type each message.
 
-Under the game is a real product: automated vendor negotiation that cuts SaaS spend.
+## What makes it tick
 
-## What's inside
+- **Simulated email bus** (`mailbox.py`) — the only channel between agents. No
+  real Gmail; a fully in-memory inbox with per-vendor threads.
+- **Autonomous agents on their own async tasks** (`buyer_agent.py`,
+  `vendor_agent.py`) — vendors reply after a **variable, personality-driven
+  delay**, so the buyer sometimes has to **follow up** (timing is randomized).
+- **A strategy brain** — the buyer runs an OODA loop: *observe* new emails →
+  *orient* by updating a **belief model** of each vendor's hidden floor →
+  *decide* a tactic (anchor, cross-leverage, bluff, deadline, squeeze extras,
+  hold, walk) → *act* by drafting an email. Beliefs and tactics stream to the UI.
+- **Live coaching injection** — drop a strategy in at any moment over the
+  WebSocket; the agent adopts the new tactic on its next move.
+- **Online research** (`research.py`) — the agent pulls peer contract
+  benchmarks and discount codes and quotes them as leverage. (Curated/simulated
+  for a reliable demo; swap in a real search backend behind the same interface.)
+- **Contract on close** (`contract.py`) — once the field converges the agent
+  drafts a structured contract; a human **approves, or sends it back** to
+  renegotiate.
+- **Everything streams over one WebSocket** (`orchestrator.py` → `main.py`):
+  agent statuses, emails, reasoning, research, strategy, and the contract.
 
-- **3 vendor agents** per scenario, each with hidden state: a public list price, a
-  private target, a hard **walk-away floor** (never crossed), a competitiveness
-  dial, and a distinct persona (challenger vs. incumbent vs. volume giant).
-- **Cross-leverage**: your buyer agent quotes the best competing offer to squeeze
-  each vendor — the core mechanic that drives a real bidding war.
-- **Strategy cards + free-text coaching** injected between rounds.
-- **Visible private reasoning** per agent (toggle on/off) — turns a chat log into a
-  spectator sport.
-- **Live price-convergence chart** with your target line.
-- **Utility-based scoring**: winner maximizes *your* value (price vs. budget,
-  savings vs. list, non-price sweeteners, and your stated priorities), plus a
-  headline **$/yr saved** number for judges.
-- **Two backends**: real **OpenAI** agents when `OPENAI_API_KEY` is set, or a
-  deterministic **mock** engine so the demo always runs offline.
-
-## Scenarios
-
-- **AI Coding Assistants** — Cursor · Claude Code · Codex
-- **Team Chat** — Slack · Microsoft Teams · Google Chat
-
-Add more in `backend/app/scenarios.py`.
+Runs fully offline in **mock mode** (deterministic agents) or with real
+**OpenAI**-drafted emails when `OPENAI_API_KEY` is set.
 
 ## Run it
 
 ```bash
 ./run.sh
+# Backend  → http://localhost:8787
+# Frontend → http://localhost:5173
 ```
 
-Then open http://localhost:5173. That starts the FastAPI backend on `:8787` and
-the Vite frontend on `:5173`.
-
-### Enable real AI agents (optional)
-
-```bash
-cd backend
-cp .env.example .env      # add your OPENAI_API_KEY
-```
-
-Without a key it runs in **mock mode** (shown as a pill in the top-right). Set
-`USE_MOCK=1` to force mock mode even with a key.
-
-### Manual start
-
-```bash
-# backend
-cd backend && python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --port 8787 --reload
-
-# frontend (separate terminal)
-cd frontend && npm install && npm run dev
-```
+Open the frontend, create a negotiation, hit **Start**, and coach away.
 
 ## Architecture
 
 ```
 backend/app/
-  models.py      pydantic models (Offer, Vendor, Negotiation, ...)
-  scenarios.py   vendor presets with hidden target/floor pricing
-  agents.py      buyer + vendor turns (OpenAI mode + mock mode)
-  engine.py      setup, utility scoring, winner selection, scorecard
-  main.py        FastAPI routes
-  store.py       in-memory session store
+  models.py        Email, Belief, Strategy, Contract, ...
+  mailbox.py       Simulated inbox (threads + read pointers)
+  vendor_agent.py  Vendor sales agents (variable-latency email replies, hidden floor)
+  buyer_agent.py   Procurement agent — the OODA strategy brain
+  research.py      Discount codes + comparable-contract benchmarks (tool)
+  engine.py        Buyer-utility scoring (lowest real annual cost wins)
+  contract.py      Draft contract from the winning offer
+  orchestrator.py  Concurrent agent tasks, event bus, coaching, pause/stop/approve
+  main.py          FastAPI: create negotiation + live WebSocket
 
 frontend/src/
-  components/    Setup, Arena, VendorThread, StrategyBar, PriceChart, Scorecard
-  api.ts         typed API client
+  ws.ts            WebSocket hook (state in, coaching/controls out)
+  components/
+    Dashboard.tsx    Layout
+    AgentRoster.tsx  Agent status + belief bars
+    Inbox.tsx        Live threaded email view
+    ActivityFeed.tsx Streaming agent reasoning/actions
+    CoachBar.tsx     Live coaching + controls + current tactic
+    ResearchPanel.tsx Benchmarks & discount codes
+    DealChart.tsx    Price convergence vs target
+    ContractModal.tsx Approve / renegotiate
 ```
 
-### API
+## WebSocket protocol
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET  | `/api/health` | mode (llm/mock) + model |
-| GET  | `/api/categories` | scenarios for the setup screen |
-| POST | `/api/negotiations` | start a negotiation |
-| GET  | `/api/negotiations/{id}` | fetch state |
-| POST | `/api/negotiations/{id}/round` | advance a round (with optional `strategy`, `target_vendor_id`, or `close_vendor_id`) |
-| POST | `/api/negotiations/{id}/finish` | close and score |
-
-## Ideas to extend
-
-- Voice mode (agents negotiate out loud) for a live audience.
-- Vendors that *know* they're competing and reference rivals by name.
-- Real invoice/renewal import → draft the actual negotiation email.
-- Tournament / leaderboard for who coaches the best negotiator.
-- Deadline pressure that accelerates concessions near the final round.
+Client → server: `start`, `coach {text}`, `pause`, `resume`, `stop`,
+`approve_contract`, `reject_contract {note}`.
+Server → client: `{type:"state", state}` — a full authoritative snapshot after
+every meaningful step (agents, threads, logs, research, strategy, contract).

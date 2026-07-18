@@ -1,132 +1,109 @@
-import { useEffect, useState } from "react";
-import { api } from "../api";
-import type { BuyerConfig, CategoryView } from "../types";
+import { useState } from "react";
+import type { BuyerConfig } from "../types";
 
-const PRIORITY_OPTIONS = [
+const ALL_PRIORITIES = [
   "lowest price",
   "flexible contract length",
-  "long-term stability",
   "premium support",
+  "free seats",
 ];
 
-export default function Setup({
-  onStart,
-}: {
-  onStart: (categoryId: string, buyer: BuyerConfig) => Promise<void>;
-}) {
-  const [categories, setCategories] = useState<CategoryView[]>([]);
-  const [categoryId, setCategoryId] = useState("coding");
-  const [seats, setSeats] = useState(60);
+export default function Setup({ onStart }: { onStart: (b: BuyerConfig) => void }) {
+  const [company, setCompany] = useState("Ramp");
+  const [seats, setSeats] = useState(200);
   const [budget, setBudget] = useState(28);
   const [priorities, setPriorities] = useState<string[]>([
     "lowest price",
     "flexible contract length",
   ]);
-  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    api.categories().then(setCategories).catch(() => {});
-  }, []);
-
-  const cat = categories.find((c) => c.id === categoryId);
-
-  function togglePriority(p: string) {
-    setPriorities((prev) =>
-      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
+  function toggle(p: string) {
+    setPriorities((cur) =>
+      cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]
     );
-  }
-
-  async function go() {
-    setBusy(true);
-    try {
-      await onStart(categoryId, {
-        seats,
-        budget_per_seat: budget,
-        priorities,
-        must_haves: [],
-      });
-    } finally {
-      setBusy(false);
-    }
   }
 
   return (
     <div className="setup">
       <div className="setup-card">
-        <h2>Set up the deal</h2>
-        <p className="muted">
-          You're vendor-agnostic. Negotiate all three at once and play them against
-          each other to drive the price down.
+        <h2>New negotiation</h2>
+        <p className="muted small">
+          Your AI procurement agent will email Cursor, Claude Code and Codex in
+          parallel, negotiate a corporate discount autonomously, and draft a
+          contract for your approval. Coach it live as it works.
         </p>
 
-        <label className="field-label">What are you buying?</label>
-        <div className="cat-grid">
-          {categories.map((c) => (
-            <button
-              key={c.id}
-              className={`cat-tile ${c.id === categoryId ? "active" : ""}`}
-              onClick={() => setCategoryId(c.id)}
-            >
-              <strong>{c.label}</strong>
-              <span className="muted">{c.vendors.map((v) => v.name).join(" · ")}</span>
-            </button>
-          ))}
-        </div>
-
+        <span className="field-label">Buyer</span>
         <div className="row">
           <div className="field">
-            <label className="field-label">Seats</label>
-            <input
-              type="number"
-              min={1}
-              value={seats}
-              onChange={(e) => setSeats(Number(e.target.value))}
-            />
+            <input value={company} onChange={(e) => setCompany(e.target.value)} />
+            <span className="muted small">Company</span>
           </div>
           <div className="field">
-            <label className="field-label">Target $/seat/mo</label>
             <input
               type="number"
-              min={1}
-              value={budget}
-              onChange={(e) => setBudget(Number(e.target.value))}
+              value={seats}
+              onChange={(e) => setSeats(+e.target.value)}
             />
+            <span className="muted small">Seats</span>
+          </div>
+          <div className="field">
+            <input
+              type="number"
+              value={budget}
+              onChange={(e) => setBudget(+e.target.value)}
+            />
+            <span className="muted small">Target $/seat/mo</span>
           </div>
         </div>
 
-        <label className="field-label">Priorities</label>
+        <span className="field-label">Priorities</span>
         <div className="chips">
-          {PRIORITY_OPTIONS.map((p) => (
+          {ALL_PRIORITIES.map((p) => (
             <button
               key={p}
-              className={`chip ${priorities.includes(p) ? "on" : ""}`}
-              onClick={() => togglePriority(p)}
+              className={"chip" + (priorities.includes(p) ? " on" : "")}
+              onClick={() => toggle(p)}
             >
               {p}
             </button>
           ))}
         </div>
 
-        <button className="primary big" disabled={busy} onClick={go}>
-          {busy ? "Setting up…" : "Enter the negotiation →"}
+        <button
+          className="primary big"
+          onClick={() =>
+            onStart({ company, seats, budget_per_seat: budget, priorities })
+          }
+        >
+          Create negotiation →
         </button>
       </div>
 
-      {cat && (
-        <div className="vendor-preview">
-          <h3>Your vendors</h3>
-          {cat.vendors.map((v) => (
-            <div key={v.id} className="vp-row" style={{ borderColor: v.color }}>
-              <div className="vp-dot" style={{ background: v.color }} />
-              <div>
-                <strong>{v.name}</strong> <span className="muted">— {v.tagline}</span>
-                <p className="muted small">{v.persona}</p>
-              </div>
-              <div className="vp-price">${v.list_price_per_seat}/seat list</div>
-            </div>
-          ))}
+      <div className="vendor-preview">
+        <h3>The field</h3>
+        <div className="vp-row" style={{ borderColor: "#7c5cff" }}>
+          <div className="vp-dot" style={{ background: "#7c5cff" }} />
+          <div>
+            <strong>Cursor</strong>
+            <p className="muted small">Scrappy challenger — discounts hard, replies fast.</p>
+          </div>
         </div>
-      )}
+        <div className="vp-row" style={{ borderColor: "#d4a27f" }}>
+          <div className="vp-dot" style={{ background: "#d4a27f" }} />
+          <div>
+            <strong>Claude Code</strong>
+            <p className="muted small">Premium & deliberate — holds price, slow to reply.</p>
+          </div>
+        </div>
+        <div className="vp-row" style={{ borderColor: "#10a37f" }}>
+          <div className="vp-dot" style={{ background: "#10a37f" }} />
+          <div>
+            <strong>Codex</strong>
+            <p className="muted small">Incumbent — leans on ecosystem, variable timing.</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,9 +1,25 @@
-"""Pydantic models shared across the negotiation engine and API."""
+"""Pydantic models for the live, email-based negotiation ops dashboard.
+
+The system simulates an *inbox*: a buyer (procurement) agent and several vendor
+agents exchange emails. Agents draft and send messages asynchronously with
+variable latency, the buyer may follow up, and a human can inject coaching at
+any time. The end goal is a drafted contract a human can approve.
+"""
 from __future__ import annotations
 
+import time
+import uuid
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+def _id(prefix: str = "") -> str:
+    return f"{prefix}{uuid.uuid4().hex[:10]}"
+
+
+def now() -> float:
+    return time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -13,35 +29,36 @@ class Offer(BaseModel):
     """A concrete, multi-issue offer for a SaaS contract."""
 
     price_per_seat: float = Field(..., description="Monthly price per seat, USD")
-    contract_length_months: int = Field(12, description="Committed contract length")
-    free_seats: int = Field(0, description="Bonus seats thrown in for free")
+    contract_length_months: int = 12
+    free_seats: int = 0
     support_tier: Literal["standard", "priority", "premium"] = "standard"
+    notes: Optional[str] = None
 
     def annual_total(self, seats: int) -> float:
-        """Effective annual cost given a seat count (free seats reduce cost)."""
         billable = max(seats - self.free_seats, 0)
         return round(billable * self.price_per_seat * 12, 2)
 
 
 # ---------------------------------------------------------------------------
-# Vendor definition (hidden state lives here)
+# Vendor definition (hidden pricing state lives here)
 # ---------------------------------------------------------------------------
 class Vendor(BaseModel):
     id: str
     name: str
     tagline: str
-    persona: str  # short description that flavors the agent's voice
-    color: str  # UI accent
+    persona: str
+    color: str
 
     list_price_per_seat: float  # public anchor
     target_price_per_seat: float  # what they'd love to close at (hidden)
     floor_price_per_seat: float  # walk-away price, never cross (hidden)
-    competitiveness: float = Field(
-        0.5, ge=0, le=1, description="How hard they cave under competitive pressure"
-    )
+    competitiveness: float = Field(0.5, ge=0, le=1)
+
+    # Variable-latency personality: min/max seconds before an email reply.
+    reply_min_s: float = 4.0
+    reply_max_s: float = 14.0
 
     def public_view(self) -> dict:
-        """Only the info the buyer/UI is allowed to see up front."""
         return {
             "id": self.id,
             "name": self.name,
@@ -53,11 +70,12 @@ class Vendor(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Buyer requirements / priorities
+# Buyer requirements
 # ---------------------------------------------------------------------------
 class BuyerConfig(BaseModel):
-    seats: int = 50
-    budget_per_seat: float = 30.0  # target monthly price per seat
+    company: str = "Ramp"
+    seats: int = 200
+    budget_per_seat: float = 28.0  # the "number we have in mind" (target)
     priorities: list[str] = Field(
         default_factory=lambda: ["lowest price", "flexible contract length"]
     )
@@ -65,75 +83,116 @@ class BuyerConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Transcript / turns
+# Email / inbox
 # ---------------------------------------------------------------------------
-class Message(BaseModel):
-    speaker: Literal["buyer", "vendor"]
-    text: str
-    reasoning: Optional[str] = None  # private thinking, shown to spectator
+class Email(BaseModel):
+    id: str = Field(default_factory=lambda: _id("em_"))
+    thread_id: str
+    sender_id: str  # agent id ("buyer" or vendor id)
+    sender_role: Literal["buyer", "vendor"]
+    sender_name: str
+    to_id: str
+    to_name: str
+    subject: str
+    body: str
+    ts: float = Field(default_factory=now)
     offer: Optional[Offer] = None
-    round: int = 0
-    walk_away: bool = False
+    is_followup: bool = False
 
 
-class VendorState(BaseModel):
-    vendor: Vendor
-    messages: list[Message] = Field(default_factory=list)
-    current_offer: Optional[Offer] = None
-    walked_away: bool = False
-    deal_closed: bool = False
-
-    def price_history(self) -> list[Optional[float]]:
-        history: list[Optional[float]] = [self.vendor.list_price_per_seat]
-        for m in self.messages:
-            if m.speaker == "vendor" and m.offer is not None:
-                history.append(m.offer.price_per_seat)
-        return history
-
-
-# ---------------------------------------------------------------------------
-# Session
-# ---------------------------------------------------------------------------
-class Negotiation(BaseModel):
+class Thread(BaseModel):
     id: str
-    category: str
-    buyer: BuyerConfig
-    vendors: dict[str, VendorState]
-    round: int = 0
-    max_rounds: int = 6
-    finished: bool = False
-    winner_id: Optional[str] = None
+    vendor_id: str
+    subject: str
+    emails: list[Email] = Field(default_factory=list)
 
-    def public_dict(self) -> dict:
-        """Serialize for the frontend (hidden vendor numbers stripped)."""
-        return {
-            "id": self.id,
-            "category": self.category,
-            "buyer": self.buyer.model_dump(),
-            "round": self.round,
-            "max_rounds": self.max_rounds,
-            "finished": self.finished,
-            "winner_id": self.winner_id,
-            "vendors": [
-                {
-                    **vs.vendor.public_view(),
-                    "messages": [m.model_dump() for m in vs.messages],
-                    "current_offer": vs.current_offer.model_dump()
-                    if vs.current_offer
-                    else None,
-                    "walked_away": vs.walked_away,
-                    "deal_closed": vs.deal_closed,
-                    "price_history": vs.price_history(),
-                    "annual_total": vs.current_offer.annual_total(self.buyer.seats)
-                    if vs.current_offer
-                    else None,
-                    "list_annual_total": round(
-                        vs.vendor.list_price_per_seat * self.buyer.seats * 12, 2
-                    ),
-                }
-                for vs in self.vendors.values()
-            ],
-        }
+
+# ---------------------------------------------------------------------------
+# Buyer's belief model about each vendor (the "strategy brain" state)
+# ---------------------------------------------------------------------------
+class Belief(BaseModel):
+    vendor_id: str
+    est_floor: float  # buyer's running estimate of the vendor's true floor
+    confidence: float = 0.2  # 0..1, grows as the vendor reveals concessions
+    momentum: float = 0.0  # $ moved on the vendor's last reply (positive = conceding)
+    last_price: Optional[float] = None
+    stalled_turns: int = 0  # consecutive replies with little/no movement
+
+
+class ResearchFinding(BaseModel):
+    source: str
+    text: str
+    url: Optional[str] = None
+    price_per_seat: Optional[float] = None
+
+
+class ResearchReport(BaseModel):
+    id: str = Field(default_factory=lambda: _id("rs_"))
+    vendor_id: str
+    query: str
+    findings: list[ResearchFinding] = Field(default_factory=list)
+    ts: float = Field(default_factory=now)
+
+
+# ---------------------------------------------------------------------------
+# Strategy / coaching
+# ---------------------------------------------------------------------------
+Tactic = Literal[
+    "anchor",
+    "cross_leverage",
+    "bluff",
+    "deadline",
+    "squeeze_non_price",
+    "hold_firm",
+    "walk_away",
+]
+
+
+class Strategy(BaseModel):
+    tactic: Tactic = "anchor"
+    rationale: str = "Open with an aggressive but credible anchor near our target."
+    target_vendor_id: Optional[str] = None  # None = applies to all
+    target_price: Optional[float] = None  # explicit $/seat the coach demanded, if any
+    source: Literal["default", "coaching", "auto"] = "default"
+    ts: float = Field(default_factory=now)
+
+
+# ---------------------------------------------------------------------------
+# Contract (the deliverable)
+# ---------------------------------------------------------------------------
+class Contract(BaseModel):
+    id: str = Field(default_factory=lambda: _id("ct_"))
+    vendor_id: str
+    vendor_name: str
+    buyer_company: str
+    seats: int
+    price_per_seat: float
+    contract_length_months: int
+    free_seats: int
+    support_tier: str
+    annual_total: float
+    list_annual_total: float
+    savings: float
+    savings_pct: float
+    effective_date: str
+    clauses: list[str] = Field(default_factory=list)
+    status: Literal["draft", "approved", "rejected"] = "draft"
+    ts: float = Field(default_factory=now)
+
+
+# ---------------------------------------------------------------------------
+# Activity log entries (the reasoning feed)
+# ---------------------------------------------------------------------------
+LogKind = Literal["system", "reasoning", "strategy", "research", "email", "action", "coaching"]
+
+
+class LogEntry(BaseModel):
+    id: str = Field(default_factory=lambda: _id("lg_"))
+    agent_id: str
+    agent_name: str
+    kind: LogKind
+    text: str
+    ts: float = Field(default_factory=now)
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +201,3 @@ class Negotiation(BaseModel):
 class StartRequest(BaseModel):
     category_id: str = "coding"
     buyer: Optional[BuyerConfig] = None
-
-
-class RoundRequest(BaseModel):
-    strategy: Optional[str] = None  # free-text or card label injected by the human
-    target_vendor_id: Optional[str] = None  # for strategies aimed at one vendor
-    close_vendor_id: Optional[str] = None  # human accepts a vendor's current offer

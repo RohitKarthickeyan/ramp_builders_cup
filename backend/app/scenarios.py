@@ -23,6 +23,8 @@ CATEGORIES: dict[str, dict] = {
                 target_price_per_seat=32,
                 floor_price_per_seat=22,
                 competitiveness=0.8,
+                reply_min_s=3.0,
+                reply_max_s=9.0,
             ),
             Vendor(
                 id="claude",
@@ -35,6 +37,8 @@ CATEGORIES: dict[str, dict] = {
                 target_price_per_seat=38,
                 floor_price_per_seat=30,
                 competitiveness=0.45,
+                reply_min_s=8.0,
+                reply_max_s=18.0,
             ),
             Vendor(
                 id="codex",
@@ -47,6 +51,8 @@ CATEGORIES: dict[str, dict] = {
                 target_price_per_seat=35,
                 floor_price_per_seat=26,
                 competitiveness=0.6,
+                reply_min_s=6.0,
+                reply_max_s=20.0,
             ),
         ],
     },

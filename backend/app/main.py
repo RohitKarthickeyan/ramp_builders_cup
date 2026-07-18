@@ -1,19 +1,24 @@
-"""FastAPI app exposing the negotiation game."""
+"""FastAPI app: create a negotiation, then drive & monitor it live over a
+WebSocket. All agent activity, emails, research, strategy and the final
+contract stream to the dashboard; coaching and controls flow back."""
 from __future__ import annotations
 
+import asyncio
 import os
+import uuid
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import agents, engine, store
-from .models import RoundRequest, StartRequest
-from .scenarios import categories_public
+from . import llm, store
+from .models import StartRequest
+from .orchestrator import NegotiationRuntime
+from .scenarios import categories_public, get_category
 
 load_dotenv()
 
-app = FastAPI(title="Leverage — Multi-Vendor Negotiation Game")
+app = FastAPI(title="Leverage — Live Negotiation Ops")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,11 +30,7 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health():
-    return {
-        "ok": True,
-        "mode": "llm" if (os.getenv("OPENAI_API_KEY") and os.getenv("USE_MOCK") != "1") else "mock",
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-    }
+    return {"ok": True, "mode": "llm" if llm.use_llm() else "mock", "model": llm.MODEL}
 
 
 @app.get("/api/categories")
@@ -40,65 +41,79 @@ def get_categories():
 @app.post("/api/negotiations")
 def create_negotiation(req: StartRequest):
     try:
-        neg = engine.start_negotiation(req.category_id, req.buyer)
+        cat = get_category(req.category_id)
     except KeyError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    store.save(neg)
-    return neg.public_dict()
+    from .models import BuyerConfig
+
+    buyer = req.buyer or BuyerConfig()
+    vendors = [v.model_copy(deep=True) for v in cat["vendors"]]
+    rt = NegotiationRuntime(
+        neg_id=uuid.uuid4().hex[:12],
+        buyer=buyer,
+        vendors=vendors,
+        mode="llm" if llm.use_llm() else "mock",
+    )
+    store.save(rt)
+    return {"id": rt.id, "state": rt.snapshot()}
 
 
 @app.get("/api/negotiations/{neg_id}")
 def get_negotiation(neg_id: str):
-    neg = store.get(neg_id)
-    if not neg:
+    rt = store.get(neg_id)
+    if not rt:
         raise HTTPException(status_code=404, detail="Negotiation not found")
-    return neg.public_dict()
+    return {"id": rt.id, "state": rt.snapshot()}
 
 
-@app.post("/api/negotiations/{neg_id}/round")
-async def play_round(neg_id: str, req: RoundRequest):
-    neg = store.get(neg_id)
-    if not neg:
-        raise HTTPException(status_code=404, detail="Negotiation not found")
-    if neg.finished:
-        raise HTTPException(status_code=400, detail="Negotiation already finished")
+async def _handle_client_message(rt: NegotiationRuntime, msg: dict):
+    kind = msg.get("type")
+    if kind == "start":
+        rt.start()
+        await rt.broadcast()
+    elif kind == "coach":
+        text = (msg.get("text") or "").strip()
+        if text:
+            await rt.apply_coaching(text)
+    elif kind == "pause":
+        await rt.pause()
+    elif kind == "resume":
+        await rt.resume()
+    elif kind == "stop":
+        await rt.stop()
+    elif kind == "approve_contract":
+        await rt.approve_contract()
+    elif kind == "reject_contract":
+        await rt.reject_contract((msg.get("note") or "").strip())
 
-    # Human chooses to accept a vendor's current offer -> end the game.
-    if req.close_vendor_id:
-        engine.finish(neg, req.close_vendor_id)
-        store.save(neg)
-        return {"negotiation": neg.public_dict(), "scorecard": engine.scorecard(neg)}
 
+@app.websocket("/api/negotiations/{neg_id}/ws")
+async def negotiation_ws(websocket: WebSocket, neg_id: str):
+    rt = store.get(neg_id)
+    if not rt:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    queue = rt.subscribe()
+    await websocket.send_json({"type": "state", "state": rt.snapshot()})
+
+    async def pump_out():
+        while True:
+            msg = await queue.get()
+            await websocket.send_json(msg)
+
+    async def pump_in():
+        while True:
+            msg = await websocket.receive_json()
+            await _handle_client_message(rt, msg)
+
+    out_task = asyncio.create_task(pump_out())
+    in_task = asyncio.create_task(pump_in())
     try:
-        await agents.run_round(neg, req.strategy, req.target_vendor_id)
-    except Exception as e:
-        # Invalid/revoked key → fall back to mock so the demo still runs.
-        from openai import AuthenticationError
-
-        if isinstance(e, AuthenticationError):
-            os.environ["USE_MOCK"] = "1"
-            await agents.run_round(neg, req.strategy, req.target_vendor_id)
-        else:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Agent backend error ({type(e).__name__}): {str(e)[:180]}",
-            )
-
-    if neg.round >= neg.max_rounds:
-        engine.finish(neg)
-
-    store.save(neg)
-    payload = {"negotiation": neg.public_dict(), "scorecard": None}
-    if neg.finished:
-        payload["scorecard"] = engine.scorecard(neg)
-    return payload
-
-
-@app.post("/api/negotiations/{neg_id}/finish")
-def finish_negotiation(neg_id: str, req: RoundRequest):
-    neg = store.get(neg_id)
-    if not neg:
-        raise HTTPException(status_code=404, detail="Negotiation not found")
-    engine.finish(neg, req.close_vendor_id)
-    store.save(neg)
-    return {"negotiation": neg.public_dict(), "scorecard": engine.scorecard(neg)}
+        await asyncio.wait({out_task, in_task}, return_when=asyncio.FIRST_COMPLETED)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        out_task.cancel()
+        in_task.cancel()
+        rt.unsubscribe(queue)

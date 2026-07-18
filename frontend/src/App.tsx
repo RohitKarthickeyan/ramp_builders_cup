@@ -1,27 +1,25 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { BuyerConfig, Negotiation, Scorecard } from "./types";
+import type { BuyerConfig } from "./types";
 import Setup from "./components/Setup";
-import Arena from "./components/Arena";
+import Dashboard from "./components/Dashboard";
 
 export default function App() {
   const [mode, setMode] = useState<string>("");
-  const [neg, setNeg] = useState<Negotiation | null>(null);
-  const [scorecard, setScorecard] = useState<Scorecard | null>(null);
+  const [negId, setNegId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.health().then((h) => setMode(h.mode)).catch(() => setMode("offline"));
   }, []);
 
-  async function handleStart(categoryId: string, buyer: BuyerConfig) {
-    const n = await api.start(categoryId, buyer);
-    setScorecard(null);
-    setNeg(n);
-  }
-
-  function reset() {
-    setNeg(null);
-    setScorecard(null);
+  async function handleStart(buyer: BuyerConfig) {
+    try {
+      const { id } = await api.create(buyer);
+      setNegId(id);
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   return (
@@ -31,24 +29,20 @@ export default function App() {
           <span className="logo">⚖️</span>
           <div>
             <h1>Leverage</h1>
-            <p>Multi-vendor negotiation, human in the loop</p>
+            <p>Autonomous contract negotiation — live agent ops</p>
           </div>
         </div>
         <div className="mode-pill" data-mode={mode}>
-          {mode === "llm" ? "● Live AI" : mode === "mock" ? "● Demo (mock)" : "○ …"}
+          {mode === "llm" ? "● Live AI" : mode === "mock" ? "● Simulated agents" : "○ …"}
         </div>
       </header>
 
-      {!neg ? (
+      {error && <div className="error">{error}</div>}
+
+      {!negId ? (
         <Setup onStart={handleStart} />
       ) : (
-        <Arena
-          neg={neg}
-          scorecard={scorecard}
-          setNeg={setNeg}
-          setScorecard={setScorecard}
-          onReset={reset}
-        />
+        <Dashboard negId={negId} onReset={() => setNegId(null)} />
       )}
     </div>
   );

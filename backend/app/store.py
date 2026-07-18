@@ -1,18 +1,18 @@
-"""Trivial in-memory session store. Fine for a single-process hackathon demo."""
+"""In-memory store of live negotiation runtimes (single-process demo)."""
 from __future__ import annotations
 
-from .models import Negotiation
+from .orchestrator import NegotiationRuntime
 
-_SESSIONS: dict[str, Negotiation] = {}
-
-
-def save(neg: Negotiation) -> None:
-    _SESSIONS[neg.id] = neg
+_RUNTIMES: dict[str, NegotiationRuntime] = {}
 
 
-def get(neg_id: str) -> Negotiation | None:
-    return _SESSIONS.get(neg_id)
+def save(rt: NegotiationRuntime) -> None:
+    _RUNTIMES[rt.id] = rt
+
+
+def get(neg_id: str) -> NegotiationRuntime | None:
+    return _RUNTIMES.get(neg_id)
 
 
 def delete(neg_id: str) -> None:
-    _SESSIONS.pop(neg_id, None)
+    _RUNTIMES.pop(neg_id, None)
