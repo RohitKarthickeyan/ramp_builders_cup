@@ -69,7 +69,20 @@ async def play_round(neg_id: str, req: RoundRequest):
         store.save(neg)
         return {"negotiation": neg.public_dict(), "scorecard": engine.scorecard(neg)}
 
-    await agents.run_round(neg, req.strategy, req.target_vendor_id)
+    try:
+        await agents.run_round(neg, req.strategy, req.target_vendor_id)
+    except Exception as e:
+        # Invalid/revoked key → fall back to mock so the demo still runs.
+        from openai import AuthenticationError
+
+        if isinstance(e, AuthenticationError):
+            os.environ["USE_MOCK"] = "1"
+            await agents.run_round(neg, req.strategy, req.target_vendor_id)
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Agent backend error ({type(e).__name__}): {str(e)[:180]}",
+            )
 
     if neg.round >= neg.max_rounds:
         engine.finish(neg)

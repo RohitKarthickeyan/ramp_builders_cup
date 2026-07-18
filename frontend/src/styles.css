@@ -169,7 +169,7 @@ button:disabled {
 .field {
   flex: 1;
 }
-input,
+input:not([type="checkbox"]):not([type="radio"]),
 select {
   width: 100%;
   background: var(--panel-2);
@@ -178,6 +178,11 @@ select {
   padding: 10px 12px;
   color: var(--text);
   font-size: 14px;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  accent-color: var(--accent);
 }
 .chips {
   display: flex;
@@ -326,10 +331,11 @@ select {
   margin-bottom: 8px;
 }
 .reasoning-toggle label {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .messages {
   flex: 1;
